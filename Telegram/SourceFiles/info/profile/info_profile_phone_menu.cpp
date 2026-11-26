@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/profile/info_profile_phone_menu.h"
+#include "ayu/ayu_settings.h"
 
 #include "data/data_user.h"
 #include "lang/lang_keys.h"
@@ -128,7 +129,7 @@ bool IsCollectiblePhone(not_null<UserData*> user) {
 }
 
 void AddPhoneMenu(not_null<Ui::PopupMenu*> menu, not_null<UserData*> user) {
-	if (user->isSelf() || !IsCollectiblePhone(user)) {
+	if (AyuSettings::getInstance().privacyMaskPhone(user->isSelf()) || user->isSelf() || !IsCollectiblePhone(user)) {
 		return;
 	} else if (const auto url = AppConfig::FragmentLink(&user->session())) {
 		menu->addSeparator(&st::expandedMenuSeparator);

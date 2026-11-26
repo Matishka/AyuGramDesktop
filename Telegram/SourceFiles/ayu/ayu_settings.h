@@ -353,6 +353,18 @@ public:
 	[[nodiscard]] int avatarCorners() const { return _avatarCorners.current(); }
 	[[nodiscard]] bool singleCornerRadius() const { return _singleCornerRadius.current(); }
 	[[nodiscard]] bool streamerMode() const { return _streamerMode.current(); }
+	[[nodiscard]] bool privacyOwnPhone() const { return _privacyOwnPhone.current(); }
+	void setPrivacyOwnPhone(bool val);
+	[[nodiscard]] bool privacyOtherPhone() const { return _privacyOtherPhone.current(); }
+	void setPrivacyOtherPhone(bool val);
+	[[nodiscard]] bool privacyOwnUsername() const { return _privacyOwnUsername.current(); }
+	void setPrivacyOwnUsername(bool val);
+	[[nodiscard]] bool privacyOtherUsername() const { return _privacyOtherUsername.current(); }
+	void setPrivacyOtherUsername(bool val);
+	[[nodiscard]] bool privacyMaskPhone(bool self) const { return self ? privacyOwnPhone() : privacyOtherPhone(); }
+	[[nodiscard]] bool privacyMaskUsername(bool self) const { return self ? privacyOwnUsername() : privacyOtherUsername(); }
+	[[nodiscard]] rpl::producer<bool> privacyMaskPhoneValue(bool self) const { return self ? _privacyOwnPhone.value() : _privacyOtherPhone.value(); }
+	[[nodiscard]] rpl::producer<bool> privacyMaskUsernameValue(bool self) const { return self ? _privacyOwnUsername.value() : _privacyOtherUsername.value(); }
 
 	void setSaveDeletedMessages(bool val);
 	void setSaveMessagesHistory(bool val);
@@ -711,6 +723,10 @@ private:
 	rpl::variable<int> _avatarCorners = 23;
 	rpl::variable<bool> _singleCornerRadius = false;
 	rpl::variable<bool> _streamerMode = false;
+	rpl::variable<bool> _privacyOwnPhone = false;
+	rpl::variable<bool> _privacyOtherPhone = false;
+	rpl::variable<bool> _privacyOwnUsername = false;
+	rpl::variable<bool> _privacyOtherUsername = false;
 
 	rpl::variable<bool> _useGlobalGhostMode = true;
 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;

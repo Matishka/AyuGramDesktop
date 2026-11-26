@@ -1069,6 +1069,30 @@ void AyuSettings::setStreamerMode(bool val) {
 	save();
 }
 
+void AyuSettings::setPrivacyOwnPhone(bool val) {
+	if (_privacyOwnPhone.current() == val) return;
+	_privacyOwnPhone = val;
+	save();
+}
+
+void AyuSettings::setPrivacyOtherPhone(bool val) {
+	if (_privacyOtherPhone.current() == val) return;
+	_privacyOtherPhone = val;
+	save();
+}
+
+void AyuSettings::setPrivacyOwnUsername(bool val) {
+	if (_privacyOwnUsername.current() == val) return;
+	_privacyOwnUsername = val;
+	save();
+}
+
+void AyuSettings::setPrivacyOtherUsername(bool val) {
+	if (_privacyOtherUsername.current() == val) return;
+	_privacyOtherUsername = val;
+	save();
+}
+
 void to_json(nlohmann::json &j, const AyuSettings &s) {
 	auto ghostAccounts = nlohmann::json::object();
 	for (const auto &[key, value] : s._ghostAccounts) {
@@ -1165,6 +1189,10 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 		{"avatarCorners", s._avatarCorners.current()},
 		{"singleCornerRadius", s._singleCornerRadius.current()},
 		{"streamerMode", s._streamerMode.current()},
+		{"privacyOwnPhone", s._privacyOwnPhone.current()},
+		{"privacyOtherPhone", s._privacyOtherPhone.current()},
+		{"privacyOwnUsername", s._privacyOwnUsername.current()},
+		{"privacyOtherUsername", s._privacyOtherUsername.current()},
 		{"messageShotSettings", s._messageShotSettings}
 	};
 }
@@ -1269,6 +1297,10 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 	s._avatarCorners = j.value("avatarCorners", defaults._avatarCorners.current());
 	s._singleCornerRadius = j.value("singleCornerRadius", defaults._singleCornerRadius.current());
 	s._streamerMode = j.value("streamerMode", defaults._streamerMode.current());
+	s._privacyOwnPhone = j.value("privacyOwnPhone", defaults._privacyOwnPhone.current());
+	s._privacyOtherPhone = j.value("privacyOtherPhone", defaults._privacyOtherPhone.current());
+	s._privacyOwnUsername = j.value("privacyOwnUsername", defaults._privacyOwnUsername.current());
+	s._privacyOtherUsername = j.value("privacyOtherUsername", defaults._privacyOtherUsername.current());
 
 	if (j.contains("messageShotSettings") && j["messageShotSettings"].is_object()) {
 		j["messageShotSettings"].get_to(s._messageShotSettings);

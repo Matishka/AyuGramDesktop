@@ -157,6 +157,32 @@ void BuildShowPeerId(SectionBuilder &builder) {
 void BuildQoLToggles(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 	auto *settings = &AyuSettings::getInstance();
 
+	builder.addSubsectionTitle(rpl::single(QStringLiteral("Profile privacy (experimental)")));
+	ayu.addSettingToggle({
+		.id = u"ayu/privacyOwnPhone"_q,
+		.title = rpl::single(QStringLiteral("Hide my phone number")),
+		.getter = &AyuSettings::privacyOwnPhone,
+		.setter = &AyuSettings::setPrivacyOwnPhone,
+	});
+	ayu.addSettingToggle({
+		.id = u"ayu/privacyOtherPhone"_q,
+		.title = rpl::single(QStringLiteral("Hide other users' phone numbers")),
+		.getter = &AyuSettings::privacyOtherPhone,
+		.setter = &AyuSettings::setPrivacyOtherPhone,
+	});
+	ayu.addSettingToggle({
+		.id = u"ayu/privacyOwnUsername"_q,
+		.title = rpl::single(QStringLiteral("Hide my username")),
+		.getter = &AyuSettings::privacyOwnUsername,
+		.setter = &AyuSettings::setPrivacyOwnUsername,
+	});
+	ayu.addSettingToggle({
+		.id = u"ayu/privacyOtherUsername"_q,
+		.title = rpl::single(QStringLiteral("Hide other users' usernames")),
+		.getter = &AyuSettings::privacyOtherUsername,
+		.setter = &AyuSettings::setPrivacyOtherUsername,
+	});
+	ayu.addSectionDivider();
 	BuildTranslator(builder, ayu);
 	ayu.addSectionDivider();
 
