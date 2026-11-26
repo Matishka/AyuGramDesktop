@@ -18,6 +18,40 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+      - name: Ensure MSVC 14.44 ATL and MFC components
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+          $vswhere = Join-Path $installer 'vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+          if (-not $vs) { throw 'Visual Studio C++ installation not found' }
+          $components = @('Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL', 'Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC')
+          $withComponents = & $vswhere -latest -products '*' -requires $components -property installationPath | Select-Object -First 1
+          if ($withComponents -ne $vs) {
+            $setup = Join-Path $installer 'setup.exe'
+            if (!(Test-Path $setup)) { throw 'Visual Studio installer setup.exe not found' }
+            $arguments = "modify --installPath `"$vs`" --add $($components[0]) --add $($components[1]) --quiet --norestart"
+            $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+            if ($process.ExitCode -notin @(0,3010)) { throw "Visual Studio component installation failed: $($process.ExitCode)" }
+          }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          # Verify the exact selected toolset, not just the newest VS headers.
+          @'
+          #include <atlbase.h>
+          #include <atlcomcli.h>
+          #include <afxwin.h>
+          int main() { return 0; }
+          '@ | Set-Content -LiteralPath atl-mfc-check.cpp -Encoding ascii
+          $script = @"
+          @echo off
+          call "$vcvars" -vcvars_ver=14.44 || exit /b 1
+          cl /nologo /c /EHsc /MT atl-mfc-check.cpp || exit /b 1
+          "@
+          Set-Content -LiteralPath atl-mfc-check.cmd -Value $script -Encoding ascii
+          cmd.exe /d /c atl-mfc-check.cmd
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC 14.44 ATL/MFC header compilation failed' }
+          Write-Host 'MSVC 14.44 ATL/MFC preflight passed.'
       - name: Validate toolchain and prepare dependencies
         shell: pwsh
         run: |
