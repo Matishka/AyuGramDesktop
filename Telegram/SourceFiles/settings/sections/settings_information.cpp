@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/sections/settings_information.h"
+#include "ayu/ayu_settings.h"
 
 #include "settings/sections/settings_main.h"
 #include "settings/settings_builder.h"
@@ -653,6 +654,7 @@ void SetupRows(
 	}
 
 	const auto copyPhone = [=] {
+		if (AyuSettings::getInstance().privacyOwnPhone()) return;
 		QGuiApplication::clipboard()->setText(self->phone());
 		controller->showToast(tr::lng_text_copied(tr::now), 500);
 	};
@@ -711,6 +713,7 @@ void SetupRows(
 			if (controller->showFrozenError()) {
 				return;
 			}
+			if (AyuSettings::getInstance().privacyOwnUsername()) return;
 			const auto box = controller->show(
 				Box(UsernamesBox, session->user()));
 			box->boxClosing(

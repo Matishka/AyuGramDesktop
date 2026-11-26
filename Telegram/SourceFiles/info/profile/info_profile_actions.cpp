@@ -64,6 +64,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/channel_statistics/earn/info_channel_earn_list.h"
 #include "info/profile/info_profile_icon.h"
 #include "info/profile/info_profile_phone_menu.h"
+#include "ayu/ayu_settings.h"
 #include "info/profile/info_profile_text.h"
 #include "info/profile/info_profile_values.h"
 #include "info/profile/info_profile_widget.h"
@@ -206,6 +207,7 @@ base::options::toggle ShowChannelJoinedBelowAbout({
 		const QString &addToLink) {
 	const auto weak = base::make_weak(controller);
 	return [=](QString link) {
+		if (const auto user = peer->asUser(); user && AyuSettings::getInstance().privacyMaskUsername(user->isSelf())) return;
 		if (link.startsWith(u"internal:"_q)) {
 			Core::App().openInternalUrl(link,
 				QVariant::fromValue(ClickHandlerContext{
@@ -1679,7 +1681,9 @@ Section DetailsFiller::makeInfo() {
 	const auto controller = _controller->parentController();
 	const auto weak = base::make_weak(controller);
 	const auto peerIdRaw = QString::number(_peer->id.value);
+	const auto privacyPeer = _peer;
 	const auto lnkHook = [=](Ui::FlatLabel::ContextMenuRequest request) {
+		if (const auto user = privacyPeer->asUser(); user && AyuSettings::getInstance().privacyMaskUsername(user->isSelf())) return;
 		const auto strong = weak.get();
 		if (!strong || !request.link) {
 			return;
@@ -1754,6 +1758,7 @@ Section DetailsFiller::makeInfo() {
 				st::infoProfileLabeledPadding,
 				st::popupMenuWithIcons).text;
 			const auto hook = [=](Ui::FlatLabel::ContextMenuRequest request) {
+				if (AyuSettings::getInstance().privacyMaskPhone(user->isSelf())) return;
 				if (request.selection.empty()) {
 					const auto callback = [=] {
 						CopyPhoneToClipboard(PhoneOrHiddenValue(user));
@@ -1782,6 +1787,7 @@ Section DetailsFiller::makeInfo() {
 		const auto usernameLine = addInfoOneLine(
 			UsernamesSubtext(_peer, tr::lng_info_username_label()),
 			UsernameValue(user, true) | rpl::map([=](TextWithEntities u) {
+				if (AyuSettings::getInstance().privacyMaskUsername(user->isSelf())) return u;
 				return u.text.isEmpty()
 					? TextWithEntities()
 					: tr::link(u, UsernameUrl(user, u.text.mid(1)));
@@ -1801,7 +1807,7 @@ Section DetailsFiller::makeInfo() {
 			true
 		) | rpl::on_next([=, label = usernameLine.text](
 				const TextWithEntities &u) {
-			if (u.text.isEmpty()) {
+			if (u.text.isEmpty() || AyuSettings::getInstance().privacyMaskUsername(user->isSelf())) {
 				return;
 			}
 			const auto username = u.text.mid(1);
@@ -1821,6 +1827,7 @@ Section DetailsFiller::makeInfo() {
 		fitLabelToButton(qrButton, usernameLine.text, rightSkip);
 		fitLabelToButton(qrButton, usernameLine.subtext, rightSkip);
 		qrButton->setClickedCallback([=, show = controller->uiShow()] {
+			if (AyuSettings::getInstance().privacyMaskUsername(user->isSelf())) return false;
 			Ui::DefaultShowFillPeerQrBoxCallback(show, user);
 			return false;
 		});

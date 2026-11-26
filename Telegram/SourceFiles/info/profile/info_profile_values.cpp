@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/profile/info_profile_values.h"
+#include "ayu/ayu_settings.h"
 
 #include "api/api_chat_participants.h"
 #include "apiwrap.h"
@@ -129,9 +130,13 @@ rpl::producer<TextWithEntities> PhoneValue(not_null<UserData*> user) {
 		Countries::Instance().updated(),
 		user->session().changes().peerFlagsValue(
 			user,
-			UpdateFlag::PhoneNumber) | rpl::to_empty
+			UpdateFlag::PhoneNumber) | rpl::to_empty,
+		AyuSettings::getInstance().privacyMaskPhoneValue(user->isSelf()) | rpl::to_empty
 	) | rpl::map([=] {
-		return tr::marked(Ui::FormatPhone(user->phone()));
+		const auto phone = user->phone();
+		return tr::marked(!phone.isEmpty() && AyuSettings::getInstance().privacyMaskPhone(user->isSelf())
+			? QStringLiteral("+••• ••• •••")
+			: Ui::FormatPhone(phone));
 	});
 }
 
@@ -148,7 +153,7 @@ rpl::producer<TextWithEntities> PhoneOrHiddenValue(not_null<UserData*> user) {
 			const QString &hidden) {
 		if (phone.text.isEmpty() && username.isEmpty() && about.isEmpty()) {
 			return tr::marked(hidden);
-		} else if (IsCollectiblePhone(user)) {
+		} else if (!AyuSettings::getInstance().privacyMaskPhone(user->isSelf()) && IsCollectiblePhone(user)) {
 			return tr::link(phone, u"internal:collectible_phone/"_q
 				+ user->phone() + '@' + QString::number(user->id.value));
 		} else {
@@ -183,13 +188,14 @@ void CopyPhoneToClipboard(rpl::producer<TextWithEntities> phone) {
 rpl::producer<TextWithEntities> UsernameValue(
 		not_null<PeerData*> peer,
 		bool primary) {
-	return (primary
-		? PlainPrimaryUsernameValue(peer)
-		: (PlainUsernameValue(peer) | rpl::type_erased)
-	) | rpl::map([](QString &&username) {
+	const auto user = peer->asUser();
+	return rpl::combine(
+		(primary ? PlainPrimaryUsernameValue(peer) : (PlainUsernameValue(peer) | rpl::type_erased)),
+		(user ? AyuSettings::getInstance().privacyMaskUsernameValue(user->isSelf()) : rpl::single(false) | rpl::type_erased)
+	) | rpl::map([](QString username, bool hidden) {
 		return username.isEmpty()
 			? tr::marked()
-			: tr::marked('@' + username);
+			: tr::marked(hidden ? QStringLiteral("@••••••••") : ('@' + username));
 	});
 }
 
@@ -224,8 +230,12 @@ rpl::producer<std::vector<TextWithEntities>> UsernamesValue(
 		peer->session().changes().peerFlagsValue(peer, UpdateFlag::Usernames)
 	);
 	if (const auto user = peer->asUser()) {
-		return std::move(value) | rpl::map([=] {
-			return map(user->usernames());
+		return rpl::merge(
+			std::move(value) | rpl::to_empty,
+			AyuSettings::getInstance().privacyMaskUsernameValue(user->isSelf()) | rpl::to_empty
+		) | rpl::map([=] {
+			return AyuSettings::getInstance().privacyMaskUsername(user->isSelf())
+				? std::vector<TextWithEntities>() : map(user->usernames());
 		});
 	} else if (const auto channel = peer->asChannel()) {
 		return std::move(value) | rpl::map([=] {

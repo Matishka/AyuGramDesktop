@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/sections/settings_main.h"
+#include "ayu/ayu_settings.h"
 
 #include "settings/settings_common_session.h"
 
@@ -251,6 +252,7 @@ Cover::Cover(
 	_qrButton.create(this, st::infoProfileLabeledButtonQr);
 	_qrButton->setAccessibleName(tr::lng_group_invite_context_qr(tr::now));
 	_qrButton->setClickedCallback([=, show = controller->uiShow()] {
+		if (AyuSettings::getInstance().privacyOwnUsername()) return;
 		Ui::DefaultShowFillPeerQrBoxCallback(show, _user);
 	});
 	Info::Profile::UsernamesValue(
@@ -297,13 +299,14 @@ void Cover::initViewers() {
 	Info::Profile::UsernameValue(
 		_user
 	) | rpl::on_next([=](const TextWithEntities &value) {
-		_username->setMarkedText(tr::link(value.text.isEmpty()
-			? tr::lng_settings_username_add(tr::now)
-			: value.text));
+		_username->setMarkedText(AyuSettings::getInstance().privacyOwnUsername()
+			? value
+			: tr::link(value.text.isEmpty() ? tr::lng_settings_username_add(tr::now) : value.text));
 		refreshUsernameGeometry(width());
 	}, lifetime());
 
 	_username->overrideLinkClickHandler([=] {
+		if (AyuSettings::getInstance().privacyOwnUsername()) return;
 		if (_controller->showFrozenError()) {
 			return;
 		}
@@ -877,8 +880,9 @@ void SetupValidatePhoneNumberSuggestion(
 		content,
 		tr::lng_settings_suggestion_phone_number_title(
 			lt_phone,
-			rpl::single(
-				Ui::FormatPhone(controller->session().user()->phone()))),
+			AyuSettings::getInstance().privacyMaskPhoneValue(true) | rpl::map([=](bool hidden) {
+				return hidden ? QStringLiteral("+••• ••• •••") : Ui::FormatPhone(controller->session().user()->phone());
+			})),
 		QMargins(
 			st::boxRowPadding.left()
 				- st::defaultSubsectionTitlePadding.left(),
