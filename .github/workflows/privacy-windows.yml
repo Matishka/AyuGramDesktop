@@ -8,7 +8,7 @@ permissions:
 jobs:
   compile:
     runs-on: windows-2025-vs2026
-    timeout-minutes: 350
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,6 +52,45 @@ jobs:
           cmd.exe /d /c atl-mfc-check.cmd
           if ($LASTEXITCODE -ne 0) { throw 'MSVC 14.44 ATL/MFC header compilation failed' }
           Write-Host 'MSVC 14.44 ATL/MFC preflight passed.'
+      - name: Increase Windows virtual memory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory | Format-List
+          Get-CimInstance Win32_PageFileUsage | Format-Table Name,AllocatedBaseSize,CurrentUsage,PeakUsage
+          Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Format-Table DeviceID,Size,FreeSpace
+          # Prefer the OS volume to preserve workspace disk space for Qt and object files.
+          $drive = $env:SystemDrive
+          $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$drive'"
+          $name = "$drive\pagefile.sys"
+          $usage = Get-CimInstance Win32_PageFileUsage | Where-Object Name -eq $name | Select-Object -First 1
+          $existingMB = if ($usage) { [int]$usage.AllocatedBaseSize } else { 0 }
+          $maxMB = [int][Math]::Min(32768, [Math]::Floor($disk.FreeSpace / 1MB) + $existingMB - 12288)
+          if ($maxMB -ge 16384) {
+            try {
+              $computer = Get-CimInstance Win32_ComputerSystem
+              Set-CimInstance -InputObject $computer -Property @{AutomaticManagedPagefile=$false} | Out-Null
+              $initialMB = [int][Math]::Min($maxMB,24576)
+              $setting = Get-CimInstance Win32_PageFileSetting | Where-Object Name -eq $name | Select-Object -First 1
+              $properties = @{InitialSize=[uint32]$initialMB;MaximumSize=[uint32]$maxMB}
+              if ($setting) {
+                Set-CimInstance -InputObject $setting -Property $properties | Out-Null
+              } else {
+                $properties.Name = $name
+                New-CimInstance -ClassName Win32_PageFileSetting -Property $properties | Out-Null
+              }
+              Write-Host "Requested pagefile on $drive : $initialMB - $maxMB MiB."
+            } catch {
+              Write-Warning "Pagefile adjustment failed: $_"
+            }
+          } else {
+            Write-Warning 'Insufficient OS disk headroom for a 16 GiB pagefile; retaining current configuration.'
+          }
+          Get-CimInstance Win32_PageFileSetting | Format-Table Name,InitialSize,MaximumSize
+          Get-CimInstance Win32_PageFileUsage | Format-Table Name,AllocatedBaseSize,CurrentUsage,PeakUsage
+          # Windows can defer pagefile changes until reboot. No reboot of hosted runner.
+          $activeMB = (Get-CimInstance Win32_PageFileUsage | Measure-Object AllocatedBaseSize -Sum).Sum
+          if ($activeMB -lt 16384) { Write-Warning 'Active pagefile is below 16 GiB; requested resize may require reboot. Compiler concurrency will be limited regardless.' }
       - name: Validate toolchain and prepare dependencies
         shell: pwsh
         run: |
@@ -89,9 +128,16 @@ jobs:
           cd /d "%GITHUB_WORKSPACE%\tdesktop\Telegram" || exit /b 1
           call configure.bat x64 -D TDESKTOP_API_ID=1 -D TDESKTOP_API_HASH=00000000000000000000000000000000 || exit /b 1
           cd /d "%GITHUB_WORKSPACE%\tdesktop" || exit /b 1
-          cmake --build out --config Release --target Telegram --parallel 2 || exit /b 1
+          rem Limit MSBuild project concurrency AND CL.exe translation-unit concurrency.
+          rem _CL_ is appended to the compiler command line, overriding inherited /MP.
+          set "_CL_=/MP2"
+          set "CL_MPCount=2"
+          cmake --build out --config Release --target Telegram --parallel 1 -- /p:CL_MPCount=2 /p:PreferredToolArchitecture=x64 || exit /b 1
           "@
           Set-Content -LiteralPath compile-ci.cmd -Value $script -Encoding ascii
+          Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory | Format-List
+          Get-CimInstance Win32_PageFileUsage | Format-Table Name,AllocatedBaseSize,CurrentUsage,PeakUsage
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name,Used,Free
           cmd.exe /d /c compile-ci.cmd
           if ($LASTEXITCODE -ne 0) { throw "Compile check failed: $LASTEXITCODE" }
           if (!(Test-Path 'tdesktop/out/Release/AyuGram.exe')) { throw 'Expected AyuGram.exe missing' }
