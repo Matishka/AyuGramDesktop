@@ -1,0 +1,64 @@
+name: Privacy Edition Windows compile check
+on:
+  push:
+    branches: ['feat/profile-privacy']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: tdesktop
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Validate toolchain and prepare dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+          if (-not $vs) { throw 'Visual Studio C++ installation not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (!(Test-Path $vcvars)) { throw 'vcvars64.bat not found' }
+          $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10\Include\10.0.26100.0"
+          if (!(Test-Path $sdk)) { throw 'Required Windows SDK 10.0.26100.0 not installed' }
+          New-Item -ItemType Directory -Force ThirdParty,Libraries | Out-Null
+          $script = @"
+          @echo off
+          call "$vcvars" -vcvars_ver=14.44 || exit /b 1
+          where cl || exit /b 1
+          where msbuild || exit /b 1
+          call tdesktop\Telegram\build\prepare\win.bat || exit /b 1
+          "@
+          Set-Content -LiteralPath prepare-ci.cmd -Value $script -Encoding ascii
+          cmd.exe /d /c prepare-ci.cmd
+          if ($LASTEXITCODE -ne 0) { throw "Dependency preparation failed: $LASTEXITCODE" }
+      - name: Configure and compile only (nonfunctional API placeholders)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+          if (-not $vs) { throw 'Visual Studio not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          # Deliberately nonfunctional values; compile check only. No sign-in or EXE distribution.
+          $script = @"
+          @echo off
+          call "$vcvars" -vcvars_ver=14.44 || exit /b 1
+          cd /d "%GITHUB_WORKSPACE%\tdesktop\Telegram" || exit /b 1
+          call configure.bat x64 -D TDESKTOP_API_ID=1 -D TDESKTOP_API_HASH=00000000000000000000000000000000 || exit /b 1
+          cd /d "%GITHUB_WORKSPACE%\tdesktop" || exit /b 1
+          cmake --build out --config Release --target Telegram --parallel 2 || exit /b 1
+          "@
+          Set-Content -LiteralPath compile-ci.cmd -Value $script -Encoding ascii
+          cmd.exe /d /c compile-ci.cmd
+          if ($LASTEXITCODE -ne 0) { throw "Compile check failed: $LASTEXITCODE" }
+          if (!(Test-Path 'tdesktop/out/Release/AyuGram.exe')) { throw 'Expected AyuGram.exe missing' }
+          Write-Host 'Compile check complete. Binary has no usable API credentials and will not be uploaded.'
