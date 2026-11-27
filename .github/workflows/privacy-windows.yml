@@ -52,45 +52,6 @@ jobs:
           cmd.exe /d /c atl-mfc-check.cmd
           if ($LASTEXITCODE -ne 0) { throw 'MSVC 14.44 ATL/MFC header compilation failed' }
           Write-Host 'MSVC 14.44 ATL/MFC preflight passed.'
-      - name: Increase Windows virtual memory
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory | Format-List
-          Get-CimInstance Win32_PageFileUsage | Format-Table Name,AllocatedBaseSize,CurrentUsage,PeakUsage
-          Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Format-Table DeviceID,Size,FreeSpace
-          # Prefer the OS volume to preserve workspace disk space for Qt and object files.
-          $drive = $env:SystemDrive
-          $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$drive'"
-          $name = "$drive\pagefile.sys"
-          $usage = Get-CimInstance Win32_PageFileUsage | Where-Object Name -eq $name | Select-Object -First 1
-          $existingMB = if ($usage) { [int]$usage.AllocatedBaseSize } else { 0 }
-          $maxMB = [int][Math]::Min(32768, [Math]::Floor($disk.FreeSpace / 1MB) + $existingMB - 12288)
-          if ($maxMB -ge 16384) {
-            try {
-              $computer = Get-CimInstance Win32_ComputerSystem
-              Set-CimInstance -InputObject $computer -Property @{AutomaticManagedPagefile=$false} | Out-Null
-              $initialMB = [int][Math]::Min($maxMB,24576)
-              $setting = Get-CimInstance Win32_PageFileSetting | Where-Object Name -eq $name | Select-Object -First 1
-              $properties = @{InitialSize=[uint32]$initialMB;MaximumSize=[uint32]$maxMB}
-              if ($setting) {
-                Set-CimInstance -InputObject $setting -Property $properties | Out-Null
-              } else {
-                $properties.Name = $name
-                New-CimInstance -ClassName Win32_PageFileSetting -Property $properties | Out-Null
-              }
-              Write-Host "Requested pagefile on $drive : $initialMB - $maxMB MiB."
-            } catch {
-              Write-Warning "Pagefile adjustment failed: $_"
-            }
-          } else {
-            Write-Warning 'Insufficient OS disk headroom for a 16 GiB pagefile; retaining current configuration.'
-          }
-          Get-CimInstance Win32_PageFileSetting | Format-Table Name,InitialSize,MaximumSize
-          Get-CimInstance Win32_PageFileUsage | Format-Table Name,AllocatedBaseSize,CurrentUsage,PeakUsage
-          # Windows can defer pagefile changes until reboot. No reboot of hosted runner.
-          $activeMB = (Get-CimInstance Win32_PageFileUsage | Measure-Object AllocatedBaseSize -Sum).Sum
-          if ($activeMB -lt 16384) { Write-Warning 'Active pagefile is below 16 GiB; requested resize may require reboot. Compiler concurrency will be limited regardless.' }
       - name: Validate toolchain and prepare dependencies
         shell: pwsh
         run: |
@@ -113,6 +74,81 @@ jobs:
           Set-Content -LiteralPath prepare-ci.cmd -Value $script -Encoding ascii
           cmd.exe /d /c prepare-ci.cmd
           if ($LASTEXITCODE -ne 0) { throw "Dependency preparation failed: $LASTEXITCODE" }
+      - name: Expand active pagefile and verify commit headroom
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Only on this disposable hosted runner. Do not change persistent WMI
+          # settings or reboot: the previous run proved that those changes were deferred.
+          Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Format-Table DeviceID,Size,FreeSpace
+          $drive = $env:SystemDrive
+          $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$drive'"
+          $name = "$drive\pagefile.sys"
+          $usage = Get-CimInstance Win32_PageFileUsage | Where-Object Name -eq $name | Select-Object -First 1
+          $existingMB = if ($usage) { [int]$usage.AllocatedBaseSize } else { 0 }
+          $targetMB = [int][Math]::Min(24576, [Math]::Floor($disk.FreeSpace / 1MB) + $existingMB - 12288)
+          if ($targetMB -ge 8192 -and $targetMB -gt $existingMB) {
+            try {
+              # NtCreatePagingFile is a native Windows API. This best-effort attempt
+              # is verified against live commit capacity, not registry settings.
+              Add-Type -TypeDefinition @'
+          using System;
+          using System.ComponentModel;
+          using System.Diagnostics;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class CiPagefile {
+              [StructLayout(LayoutKind.Sequential)] struct Luid { public uint Low; public int High; }
+              [StructLayout(LayoutKind.Sequential)] struct Privilege { public uint Count; public Luid Id; public uint Attributes; }
+              [StructLayout(LayoutKind.Sequential)] struct UnicodeString { public ushort Length, MaximumLength; public IntPtr Buffer; }
+              [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+              [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool LookupPrivilegeValue(string system, string name, out Luid luid);
+              [DllImport("advapi32.dll", SetLastError=true)] static extern bool AdjustTokenPrivileges(IntPtr token, bool disable, ref Privilege state, uint length, IntPtr previous, IntPtr returned);
+              [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint QueryDosDevice(string device, StringBuilder target, int size);
+              [DllImport("ntdll.dll")] static extern int NtCreatePagingFile(ref UnicodeString name, ref long minimum, ref long maximum, uint flags);
+              public static void Expand(string drive, long bytes) {
+                  IntPtr token;
+                  if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 0x28, out token))
+                      throw new Win32Exception(Marshal.GetLastWin32Error());
+                  try {
+                      Luid id;
+                      if (!LookupPrivilegeValue(null, "SeCreatePagefilePrivilege", out id))
+                          throw new Win32Exception(Marshal.GetLastWin32Error());
+                      var state = new Privilege { Count=1, Id=id, Attributes=2 };
+                      bool ok = AdjustTokenPrivileges(token, false, ref state, 0, IntPtr.Zero, IntPtr.Zero);
+                      int error = Marshal.GetLastWin32Error();
+                      if (!ok || error != 0) throw new Win32Exception(error);
+                      var target = new StringBuilder(1024);
+                      if (QueryDosDevice(drive, target, target.Capacity)==0)
+                          throw new Win32Exception(Marshal.GetLastWin32Error());
+                      string path = target.ToString().Split('\0')[0] + @"\pagefile.sys";
+                      IntPtr buffer = Marshal.StringToHGlobalUni(path);
+                      try {
+                          var name = new UnicodeString { Length=(ushort)(path.Length*2), MaximumLength=(ushort)((path.Length+1)*2), Buffer=buffer };
+                          long min=bytes, max=bytes;
+                          int status=NtCreatePagingFile(ref name, ref min, ref max, 0);
+                          if (status!=0) throw new InvalidOperationException("NtCreatePagingFile status 0x"+unchecked((uint)status).ToString("X8"));
+                      } finally { Marshal.FreeHGlobal(buffer); }
+                  } finally { CloseHandle(token); }
+              }
+          }
+          '@
+              [CiPagefile]::Expand($drive, [long]$targetMB * 1MB)
+              Write-Host "Live pagefile expansion requested: $targetMB MiB."
+            } catch {
+              Write-Warning "Live expansion unavailable: $_. Keeping original pagefile settings."
+            }
+          } else {
+            Write-Warning 'Not enough OS disk headroom for expansion, or current pagefile already meets target.'
+          }
+          $os = Get-CimInstance Win32_OperatingSystem
+          $os | Select-Object TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory | Format-List
+          $activeMB = (Get-CimInstance Win32_PageFileUsage | Measure-Object AllocatedBaseSize -Sum).Sum
+          Get-CimInstance Win32_PageFileUsage | Format-Table Name,AllocatedBaseSize,CurrentUsage,PeakUsage
+          Write-Host "Active pagefile: $activeMB MiB; available commit: $([Math]::Round($os.FreeVirtualMemory / 1MB, 2)) GiB."
+          if ($activeMB -lt 8192) { Write-Warning 'Active pagefile below 8 GiB; serial unoptimized compilation is the fallback.' }
+          if ($os.FreeVirtualMemory -lt 12582912) { throw 'Less than 12 GiB free commit capacity; refusing to start memory-heavy compilation.' }
       - name: Configure and compile only (nonfunctional API placeholders)
         shell: pwsh
         run: |
@@ -128,16 +164,21 @@ jobs:
           cd /d "%GITHUB_WORKSPACE%\tdesktop\Telegram" || exit /b 1
           call configure.bat x64 -D TDESKTOP_API_ID=1 -D TDESKTOP_API_HASH=00000000000000000000000000000000 || exit /b 1
           cd /d "%GITHUB_WORKSPACE%\tdesktop" || exit /b 1
-          rem Limit MSBuild project concurrency AND CL.exe translation-unit concurrency.
-          rem _CL_ is appended to the compiler command line, overriding inherited /MP.
-          set "_CL_=/MP2"
-          set "CL_MPCount=2"
-          cmake --build out --config Release --target Telegram --parallel 1 -- /p:CL_MPCount=2 /p:PreferredToolArchitecture=x64 || exit /b 1
+          rem Serial compile-only build. Keep Release ABI and definitions, disable costly optimization.
+          rem _CL_ appends these switches after the generated compiler options.
+          set "_CL_=/MP1 /Od /GL-"
+          set "CL_MPCount=1"
+          set "UseMultiToolTask=false"
+          set "MSBUILDDISABLENODEREUSE=1"
+          echo Compiler overrides: %_CL_%
+          cmake --build out --config Release --target Telegram --parallel 1 -- /p:CL_MPCount=1 /p:PreferredToolArchitecture=x64 /p:UseMultiToolTask=false /p:BuildInParallel=false /p:WholeProgramOptimization=false /nr:false || exit /b 1
           "@
           Set-Content -LiteralPath compile-ci.cmd -Value $script -Encoding ascii
           Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory | Format-List
           Get-CimInstance Win32_PageFileUsage | Format-Table Name,AllocatedBaseSize,CurrentUsage,PeakUsage
           Get-PSDrive -PSProvider FileSystem | Format-Table Name,Used,Free
+          $freeKiB = (Get-CimInstance Win32_OperatingSystem).FreeVirtualMemory
+          if ($freeKiB -lt 12582912) { throw 'Less than 12 GiB free commit capacity before compilation.' }
           cmd.exe /d /c compile-ci.cmd
           if ($LASTEXITCODE -ne 0) { throw "Compile check failed: $LASTEXITCODE" }
           if (!(Test-Path 'tdesktop/out/Release/AyuGram.exe')) { throw 'Expected AyuGram.exe missing' }
